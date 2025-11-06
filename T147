@@ -1,0 +1,284 @@
+from datetime import datetime, timedelta
+import sqlite3
+import time
+import os
+
+# ==============================================================
+#                   DATABASE INITIALIZATION
+# ==============================================================
+DB_FILE = "voting_system.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    # Create candidates table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            party TEXT NOT NULL,
+            added_at TEXT NOT NULL
+        )
+    """)
+    # Create voters table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS voters (
+            voter_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            registered_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# ==============================================================
+#                   GLOBAL VARIABLES
+# ==============================================================
+candidates = []
+voters = {}
+voted_voters = set()
+valid_votes = []
+vote_count = {}
+
+# ==============================================================
+#                   UTILITY FUNCTIONS
+# ==============================================================
+def current_time():
+    return datetime.now().strftime("%H:%M:%S")
+
+def is_open(start, end):
+    return start <= datetime.now() <= end
+
+# ==============================================================
+#                   DATABASE OPERATIONS
+# ==============================================================
+def save_candidate_to_db(name, party):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO candidates (name, party, added_at) VALUES (?, ?, ?)",
+                (name, party, current_time()))
+    conn.commit()
+    conn.close()
+
+def save_voter_to_db(voter_id, name):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO voters (voter_id, name, registered_at) VALUES (?, ?, ?)",
+                (voter_id, name, current_time()))
+    conn.commit()
+    conn.close()
+
+def fetch_candidates_from_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT name, party FROM candidates")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def fetch_voters_from_db():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT voter_id, name FROM voters")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+# ==============================================================
+#                   CORE FUNCTIONALITY
+# ==============================================================
+
+def add_candidate(candidate_reg_end):
+    if not is_open(start_time, candidate_reg_end):
+        print("\nCandidate registration period is closed.")
+        return
+    name = input("Enter candidate name: ").strip().title()
+    if not name:
+        print("Candidate name cannot be empty.")
+        return
+    party = input("Enter party name: ").strip().title()
+    if not party:
+        print("Party name cannot be empty.")
+        return
+    if (name, party) in candidates:
+        print(f"Candidate '{name}' from '{party}' already exists.")
+        return
+    candidates.append((name, party))
+    vote_count[(name, party)] = 0
+    save_candidate_to_db(name, party)
+    print(f"✅ Candidate '{name}' from '{party}' added successfully at {current_time()} and saved to DB.")
+
+def display_candidates():
+    db_candidates = fetch_candidates_from_db()
+    if not db_candidates:
+        print("⚠ No candidates registered yet.")
+        return
+    print("\n--- Candidate List (From Database) ---")
+    for i, (name, party) in enumerate(db_candidates, start=1):
+        print(f"{i}. {name} ({party})")
+    print("--------------------------------------")
+
+def register_voter(voter_reg_end):
+    if not is_open(candidate_reg_end, voter_reg_end):
+        print("\nVoter registration period is closed.")
+        return
+    voter_id = input("Enter Voter ID: ").strip()
+    name = input("Enter Voter Name: ").strip().title()
+    if not voter_id or not name:
+        print("Voter ID and Name cannot be empty.")
+        return
+    if voter_id in voters:
+        print("Voter already registered!")
+        return
+    voters[voter_id] = name
+    save_voter_to_db(voter_id, name)
+    print(f"✅ Voter '{name}' registered successfully with ID {voter_id} at {current_time()} and saved to DB.")
+
+def cast_vote(voting_start, voting_end):
+    if not is_open(voting_start, voting_end):
+        print("\nVoting is currently closed.")
+        return
+    if not candidates:
+        print("⚠ No candidates available to vote for.")
+        return
+    voter_id = input("Enter your Voter ID: ").strip()
+    if not voter_id:
+        print("Voter ID cannot be empty.")
+        return
+    if voter_id not in voters:
+        print("You are not a registered voter.")
+        return
+    if voter_id in voted_voters:
+        print("⚠ You have already voted.")
+        return
+    display_candidates()
+    try:
+        choice = int(input("Enter the number of the candidate you want to vote for: "))
+    except ValueError:
+        print("Invalid input. Please enter a valid number.")
+        return
+    db_candidates = fetch_candidates_from_db()
+    if choice < 1 or choice > len(db_candidates):
+        print("Invalid candidate number.")
+        return
+    name, party = db_candidates[choice - 1]
+    voted_voters.add(voter_id)
+    valid_votes.append((voter_id, name, party))
+    vote_count[(name, party)] = vote_count.get((name, party), 0) + 1
+    print(f"🗳 Vote cast successfully by {voters[voter_id]} for {name} ({party}) at {current_time()}.")
+
+def display_results():
+    print("\n------ Voting Results ------")
+    db_candidates = fetch_candidates_from_db()
+    if not db_candidates:
+        print("No candidates registered.")
+        return
+    for (name, party) in db_candidates:
+        print(f"{name} ({party}): {vote_count.get((name, party), 0)} votes")
+
+    if not valid_votes:
+        print("No votes were cast.")
+        return
+
+    max_votes = max(vote_count.values())
+    winners = [(c, p) for (c, p), v in vote_count.items() if v == max_votes]
+    if len(winners) > 1:
+        print("\n🤝 It's a tie between:")
+        for c, p in winners:
+            print(f"- {c} ({p}) with {max_votes} votes each")
+    else:
+        c, p = winners[0]
+        print(f"\n🏆 Winner: {c} ({p}) with {max_votes} votes!")
+
+# ==============================================================
+#                   MAIN FLOW
+# ==============================================================
+
+def menu():
+    global start_time, candidate_reg_end, voter_reg_end, voting_start, voting_end
+
+    print("\n===== ADMIN CONFIGURATION =====")
+    try:
+        c_time = int(input("Enter candidate registration duration (in seconds): "))
+        v_time = int(input("Enter voter registration duration (in seconds): "))
+        vote_time = int(input("Enter voting duration (in seconds): "))
+    except ValueError:
+        print("Invalid input! Please enter numbers only.")
+        return
+
+    start_time = datetime.now()
+    candidate_reg_end = start_time + timedelta(seconds=c_time)
+    voter_reg_end = candidate_reg_end + timedelta(seconds=v_time)
+    voting_start = voter_reg_end
+    voting_end = voting_start + timedelta(seconds=vote_time)
+
+    print("\n✅ Timers Set:")
+    print(f"Candidate Registration ends at: {candidate_reg_end.strftime('%H:%M:%S')}")
+    print(f"Voter Registration ends at: {voter_reg_end.strftime('%H:%M:%S')}")
+    print(f"Voting ends at: {voting_end.strftime('%H:%M:%S')}")
+
+    # ---- Candidate Registration Phase ----
+    while datetime.now() <= candidate_reg_end:
+        print("\n========== CANDIDATE REGISTRATION ==========")
+        print("1. Add Candidate")
+        print("2. Display Candidates")
+        print("3. Continue")
+        choice = input("Enter your choice: ").strip()
+        if choice == "1":
+            add_candidate(candidate_reg_end)
+        elif choice == "2":
+            display_candidates()
+        elif choice == "3":
+            pass
+        else:
+            print("Invalid choice.")
+        time.sleep(1)
+
+    print(f"\nCandidate registration closed at {current_time()}.")
+
+    # ---- Voter Registration Phase ----
+    while datetime.now() <= voter_reg_end:
+        print("\n========== VOTER REGISTRATION ==========")
+        print("1. Register Voter")
+        print("2. Display Candidates")
+        print("3. Continue")
+        choice = input("Enter your choice: ").strip()
+        if choice == "1":
+            register_voter(voter_reg_end)
+        elif choice == "2":
+            display_candidates()
+        elif choice == "3":
+            pass
+        else:
+            print("Invalid choice.")
+        time.sleep(1)
+
+    print(f"\nVoter registration closed at {current_time()}.")
+
+    # ---- Voting Phase ----
+    print(f"\n🗳 Voting starts now and will close at {voting_end.strftime('%H:%M:%S')}.")
+    while datetime.now() <= voting_end:
+        print("\n========== VOTING PHASE ==========")
+        print("1. Cast Vote")
+        print("2. Display Candidates")
+        print("3. Continue")
+        choice = input("Enter your choice: ").strip()
+        if choice == "1":
+            cast_vote(voting_start, voting_end)
+        elif choice == "2":
+            display_candidates()
+        elif choice == "3":
+            pass
+        else:
+            print("Invalid choice.")
+        time.sleep(1)
+
+    print(f"\nVoting closed at {current_time()}.")
+    display_results()
+
+# ==============================================================
+#                   ENTRY POINT
+# ==============================================================
+if _name_ == "_main_":
+    init_db()
+    menu()
